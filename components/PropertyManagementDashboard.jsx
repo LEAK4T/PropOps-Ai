@@ -1,0 +1,1271 @@
+'use client';
+
+import React, { useState, useMemo } from 'react';
+import {
+  Building2, ChevronDown, TrendingUp, BarChart3, Wallet, Users, Bell,
+  MessageSquare, Wrench, Star, Zap, CheckCircle2, AlertTriangle,
+  Sparkles, FileText, Droplet, Thermometer, Lock, PaintRoller,
+  CreditCard, Volume2, CalendarClock, KeyRound, Car, Plus,
+  XCircle, Percent, CircleDollarSign, X, Inbox,
+} from 'lucide-react';
+
+// ============================================================
+// Design notes for whoever maintains this file:
+// - Icons come from lucide-react (npm install lucide-react). No emoji
+//   anywhere in the UI - a real icon library reads as built, not assembled.
+// - Typography uses Tailwind's default font-sans stack (no extra package
+//   needed) so this file works in any preview sandbox. In your actual
+//   Next.js/Vercel project, you can optionally upgrade to Geist for a
+//   closer match to the Vercel ecosystem: npm install geist, then apply
+//   GeistSans.className once in app/layout.jsx rather than per-component -
+//   ask if you'd like that root layout written out.
+// - The four headline KPIs are intentionally NOT four identical cards.
+//   NOI is the number a landlord/investor actually anchors on, so it gets
+//   a distinct, larger treatment; Revenue/Expenses/Occupancy are grouped
+//   as a secondary compact strip. Visual hierarchy should match business
+//   priority, not just "loop over an array of stats."
+//
+// - NEW IN THIS VERSION - Payment Activity + Tenant Communications:
+//   Both are still front-end-only React state (nothing persists on
+//   refresh), but they're deliberately modeled to match the real backend
+//   design already scoped for Supabase:
+//     * Payment actions (Log Payment / Missed / Partial / Extension) map
+//       directly onto rows you'll insert into `ledger_entries` - each
+//       button press here is one future INSERT. "Missed" and "Extension"
+//       aren't in the current entry_type enum (rent_payment, late_fee,
+//       repair_cost, other_income, other_expense) - you'll want to add
+//       'missed_payment' and 'payment_extension' as enum values, or add
+//       a `lease_status_event` side table if you want to keep the ledger
+//       strictly financial. Either works; pick one before building this
+//       for real.
+//     * Tenant Communications entries map onto a NEW table not yet in
+//       schema.sql - `tenant_communications` (tenant_id, unit_id, channel,
+//       category, message, status, created_at). This is separate from
+//       `maintenance_requests` on purpose: a noise complaint or billing
+//       dispute isn't a repair ticket, but you still want a timestamped
+//       record of it - genuinely useful if a dispute ever escalates.
+// ============================================================
+
+function StarRating({ rating, max = 5 }) {
+  return (
+    <div className="flex items-center gap-0.5" aria-label={`${rating} out of ${max} stars`}>
+      {Array.from({ length: max }).map((_, i) => (
+        <Star
+          key={i}
+          size={13}
+          className={i < rating ? 'fill-amber-400 text-amber-400' : 'text-slate-700'}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FadeIn({ children, keyProp }) {
+  return (
+    <div key={keyProp} className="animate-[fadeIn_200ms_ease-out]">
+      {children}
+    </div>
+  );
+}
+
+const maintIconMap = { leak: Droplet, hvac: Thermometer, security: Lock, cosmetic: PaintRoller };
+const tenantIconMap = { 'late-fee': CreditCard, noise: Volume2, renewal: CalendarClock, access: KeyRound, parking: Car };
+
+const commsCategoryStyle = {
+  Complaint: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+  Billing: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+  General: 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20',
+  Maintenance: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+};
+
+export default function PropertyManagementDashboard() {
+  const [activeTab, setActiveTab] = useState('analytics');
+  const [selectedPropertyId, setSelectedPropertyId] = useState('sunset');
+
+  // ============================================================
+  // ALL MOCK DATA, KEYED BY PROPERTY (unchanged from prior version)
+  // ============================================================
+  const propertiesData = {
+    sunset: {
+      id: 'sunset',
+      label: 'Sunset Heights (24 Units)',
+      unitLabel: 'Unit',
+      tenantLabel: 'Tenant',
+      financials: {
+        grossRevenue: 34200,
+        operatingExpenses: 9400,
+        netOperatingIncome: 24800,
+        occupancyRate: '95.8%',
+        totalUnits: 24,
+        occupiedUnits: 23,
+      },
+      unitLedger: [
+        { id: '101', tenant: 'Marcus Vance', rent: 2200, lateFees: 0, repairs: 150, netIncome: 2050, status: 'Paid', leaseEnd: '2027-04-30', document: 'Lease_101.pdf' },
+        { id: '102', tenant: 'Sarah Jenkins', rent: 2400, lateFees: 50, repairs: 0, netIncome: 2450, status: 'Late (5 Days)', leaseEnd: '2026-11-15', document: 'Lease_102.pdf' },
+        { id: '201', tenant: 'David Miller', rent: 2100, lateFees: 0, repairs: 620, netIncome: 1480, status: 'Paid', leaseEnd: '2027-01-31', document: 'Lease_201.pdf' },
+        { id: '202', tenant: 'Elena Rostova', rent: 2350, lateFees: 0, repairs: 0, netIncome: 2350, status: 'Paid', leaseEnd: '2027-08-31', document: 'Lease_202.pdf' },
+        { id: '301', tenant: 'James Smith', rent: 2500, lateFees: 100, repairs: 80, netIncome: 2520, status: 'Late (3 Days)', leaseEnd: '2026-12-01', document: 'Lease_301.pdf' },
+        { id: '302', tenant: 'Priya Anand', rent: 2300, lateFees: 0, repairs: 0, netIncome: 2300, status: 'Paid', leaseEnd: '2027-02-28', document: 'Lease_302.pdf' },
+        { id: '401', tenant: 'Carlos Mendoza', rent: 2600, lateFees: 0, repairs: 210, netIncome: 2390, status: 'Paid', leaseEnd: '2026-10-31', document: 'Lease_401.pdf' },
+        { id: '402', tenant: 'Grace Whitfield', rent: 2250, lateFees: 0, repairs: 0, netIncome: 2250, status: 'Paid', leaseEnd: '2027-05-31', document: 'Lease_402.pdf' },
+      ],
+      expenses: [
+        { id: 1, date: '2026-09-10', category: 'Maintenance', vendor: 'South Florida HVAC', amount: 620, unit: 'Unit 201' },
+        { id: 2, date: '2026-09-08', category: 'Plumbing', vendor: 'Rapid Drain Co.', amount: 150, unit: 'Unit 101' },
+        { id: 3, date: '2026-09-01', category: 'Utilities', vendor: 'FPL Electric', amount: 1850, unit: 'Building Common' },
+        { id: 4, date: '2026-09-01', category: 'Landscaping', vendor: 'Green Thumb Palms', amount: 800, unit: 'Grounds' },
+        { id: 5, date: '2026-08-27', category: 'Locksmith', vendor: 'SecureLock 24/7', amount: 210, unit: 'Unit 401' },
+        { id: 6, date: '2026-08-22', category: 'Pest Control', vendor: 'Coastal Pest Solutions', amount: 175, unit: 'Building Common' },
+      ],
+      reminders: [
+        { id: 1, title: 'Monthly Rent Reminder', recipient: 'All Tenants', triggerDate: '3 days before 1st', status: 'Scheduled', type: 'SMS & Email' },
+        { id: 2, title: 'Late Rent Warning + $50 Fee', recipient: 'Sarah Jenkins (Unit 102)', triggerDate: '5 days past due', status: 'Active Trigger', type: 'Email' },
+        { id: 3, title: 'Lease Renewal Notice', recipient: 'Sarah Jenkins (Unit 102)', triggerDate: '60 days before expiration', status: 'Pending', type: 'Email' },
+        { id: 4, title: 'Lease Renewal Notice', recipient: 'Carlos Mendoza (Unit 401)', triggerDate: '60 days before expiration', status: 'Pending', type: 'Email' },
+      ],
+      activityLog: [
+        { id: 1, time: 'Today, 8:02 AM', actor: 'Tenant Message Agent', icon: MessageSquare, action: 'Auto-replied to Sarah Jenkins (Unit 102) re: late fee waiver request', outcome: 'Sent' },
+        { id: 2, time: 'Today, 6:00 AM', actor: 'Reminder Agent', icon: Bell, action: 'Sent monthly rent reminder to 24 tenants (SMS + Email)', outcome: 'Sent' },
+        { id: 3, time: 'Yesterday, 4:41 PM', actor: 'Maintenance Triage Agent', icon: Wrench, action: 'Classified Unit 302 A/C outage as P2 - Urgent, dispatched South Florida HVAC', outcome: 'Dispatched' },
+        { id: 4, time: 'Yesterday, 11:15 AM', actor: 'Reputation Agent', icon: Star, action: 'Drafted reply to 2-star Google review, held for manager approval', outcome: 'Awaiting Approval' },
+        { id: 5, time: '2 days ago, 9:30 AM', actor: 'Reminder Agent', icon: Bell, action: 'Sent late rent warning + $50 fee notice to James Smith (Unit 301)', outcome: 'Sent' },
+        { id: 6, time: '3 days ago, 2:12 PM', actor: 'Tenant Message Agent', icon: MessageSquare, action: 'Auto-replied to Carlos Mendoza (Unit 401) re: parking permit question', outcome: 'Sent' },
+      ],
+      reviews: [
+        { id: 1, author: 'Alex Rivera', rating: 2, date: '2 days ago', comment: 'Elevator in Building B was down for 3 days and maintenance took forever to answer.' },
+        { id: 2, author: 'Amanda Blake', rating: 5, date: '1 week ago', comment: 'Loved living at Sunset Heights! Clean grounds and quick management team.' }
+      ],
+    },
+    oceanpalm: {
+      id: 'oceanpalm',
+      label: 'Ocean Palm Suites (12 Units)',
+      unitLabel: 'Unit',
+      tenantLabel: 'Tenant',
+      financials: {
+        grossRevenue: 21600,
+        operatingExpenses: 5200,
+        netOperatingIncome: 16400,
+        occupancyRate: '91.7%',
+        totalUnits: 12,
+        occupiedUnits: 11,
+      },
+      unitLedger: [
+        { id: '1A', tenant: 'Natalie Brooks', rent: 1950, lateFees: 0, repairs: 0, netIncome: 1950, status: 'Paid', leaseEnd: '2027-03-15', document: 'Lease_1A.pdf' },
+        { id: '1B', tenant: 'Omar Farouk', rent: 1900, lateFees: 0, repairs: 340, netIncome: 1560, status: 'Paid', leaseEnd: '2026-12-31', document: 'Lease_1B.pdf' },
+        { id: '2A', tenant: 'Lena Kowalski', rent: 2050, lateFees: 75, repairs: 0, netIncome: 2125, status: 'Late (2 Days)', leaseEnd: '2026-10-20', document: 'Lease_2A.pdf' },
+        { id: '2B', tenant: 'Trevor Nash', rent: 1900, lateFees: 0, repairs: 0, netIncome: 1900, status: 'Paid', leaseEnd: '2027-06-30', document: 'Lease_2B.pdf' },
+        { id: '3A', tenant: 'Yuki Tanaka', rent: 2100, lateFees: 0, repairs: 0, netIncome: 2100, status: 'Paid', leaseEnd: '2027-01-15', document: 'Lease_3A.pdf' },
+      ],
+      expenses: [
+        { id: 1, date: '2026-09-09', category: 'Pool Maintenance', vendor: 'Blue Wave Pool Service', amount: 340, unit: 'Building Common' },
+        { id: 2, date: '2026-09-05', category: 'Plumbing', vendor: 'Rapid Drain Co.', amount: 340, unit: 'Unit 1B' },
+        { id: 3, date: '2026-09-02', category: 'Utilities', vendor: 'FPL Electric', amount: 980, unit: 'Building Common' },
+        { id: 4, date: '2026-08-30', category: 'Landscaping', vendor: 'Green Thumb Palms', amount: 450, unit: 'Grounds' },
+      ],
+      reminders: [
+        { id: 1, title: 'Monthly Rent Reminder', recipient: 'All Tenants', triggerDate: '3 days before 1st', status: 'Scheduled', type: 'SMS & Email' },
+        { id: 2, title: 'Late Rent Warning + $50 Fee', recipient: 'Lena Kowalski (Unit 2A)', triggerDate: '5 days past due', status: 'Active Trigger', type: 'Email' },
+        { id: 3, title: 'Lease Renewal Notice', recipient: 'Lena Kowalski (Unit 2A)', triggerDate: '60 days before expiration', status: 'Pending', type: 'Email' },
+      ],
+      activityLog: [
+        { id: 1, time: 'Today, 7:45 AM', actor: 'Tenant Message Agent', icon: MessageSquare, action: 'Auto-replied to Omar Farouk (Unit 1B) re: pool hours question', outcome: 'Sent' },
+        { id: 2, time: 'Today, 6:00 AM', actor: 'Reminder Agent', icon: Bell, action: 'Sent monthly rent reminder to 12 tenants (SMS + Email)', outcome: 'Sent' },
+        { id: 3, time: 'Yesterday, 3:20 PM', actor: 'Maintenance Triage Agent', icon: Wrench, action: 'Classified Unit 1B sink leak as P1 - Emergency, dispatched Rapid Drain Co.', outcome: 'Dispatched' },
+        { id: 4, time: '2 days ago, 10:05 AM', actor: 'Reminder Agent', icon: Bell, action: 'Sent late rent warning + $50 fee notice to Lena Kowalski (Unit 2A)', outcome: 'Sent' },
+      ],
+      reviews: [
+        { id: 1, author: 'Devon Michaels', rating: 4, date: '4 days ago', comment: 'Great pool and quiet building, only issue is limited guest parking.' },
+        { id: 2, author: 'Farah Haddad', rating: 5, date: '2 weeks ago', comment: 'Management responds fast and the courtyard is beautiful.' }
+      ],
+    },
+    aventura: {
+      id: 'aventura',
+      label: 'Aventura Commercial Hub',
+      unitLabel: 'Suite',
+      tenantLabel: 'Business',
+      financials: {
+        grossRevenue: 58500,
+        operatingExpenses: 14200,
+        netOperatingIncome: 44300,
+        occupancyRate: '88.9%',
+        totalUnits: 9,
+        occupiedUnits: 8,
+      },
+      unitLedger: [
+        { id: '100', tenant: 'Coastal Dental Group', rent: 7200, lateFees: 0, repairs: 0, netIncome: 7200, status: 'Paid', leaseEnd: '2028-02-28', document: 'Lease_Suite100.pdf' },
+        { id: '110', tenant: 'Bright Minds Tutoring', rent: 4800, lateFees: 0, repairs: 300, netIncome: 4500, status: 'Paid', leaseEnd: '2027-09-30', document: 'Lease_Suite110.pdf' },
+        { id: '120', tenant: 'Vantage Legal Partners', rent: 8100, lateFees: 400, repairs: 0, netIncome: 8500, status: 'Late (7 Days)', leaseEnd: '2026-11-30', document: 'Lease_Suite120.pdf' },
+        { id: '200', tenant: 'Pure Barre Aventura', rent: 6200, lateFees: 0, repairs: 0, netIncome: 6200, status: 'Paid', leaseEnd: '2027-12-31', document: 'Lease_Suite200.pdf' },
+        { id: '210', tenant: 'Sunrise Accounting LLC', rent: 5400, lateFees: 0, repairs: 150, netIncome: 5250, status: 'Paid', leaseEnd: '2027-07-31', document: 'Lease_Suite210.pdf' },
+      ],
+      expenses: [
+        { id: 1, date: '2026-09-11', category: 'Elevator Maintenance', vendor: 'Metro Elevator Services', amount: 1100, unit: 'Building Common' },
+        { id: 2, date: '2026-09-07', category: 'HVAC', vendor: 'South Florida HVAC', amount: 300, unit: 'Suite 110' },
+        { id: 3, date: '2026-09-01', category: 'Utilities', vendor: 'FPL Electric', amount: 3200, unit: 'Building Common' },
+        { id: 4, date: '2026-08-28', category: 'Security', vendor: 'Aventura Guard Services', amount: 2400, unit: 'Building Common' },
+        { id: 5, date: '2026-08-20', category: 'Plumbing', vendor: 'Rapid Drain Co.', amount: 150, unit: 'Suite 210' },
+      ],
+      reminders: [
+        { id: 1, title: 'Monthly Rent Reminder', recipient: 'All Tenants', triggerDate: '3 days before 1st', status: 'Scheduled', type: 'Email' },
+        { id: 2, title: 'Late Rent Warning + $400 Fee', recipient: 'Vantage Legal Partners (Suite 120)', triggerDate: '7 days past due', status: 'Active Trigger', type: 'Email' },
+        { id: 3, title: 'Lease Renewal Notice', recipient: 'Vantage Legal Partners (Suite 120)', triggerDate: '90 days before expiration', status: 'Pending', type: 'Email' },
+      ],
+      activityLog: [
+        { id: 1, time: 'Today, 9:10 AM', actor: 'Tenant Message Agent', icon: MessageSquare, action: 'Auto-replied to Sunrise Accounting LLC (Suite 210) re: after-hours HVAC access', outcome: 'Sent' },
+        { id: 2, time: 'Today, 6:00 AM', actor: 'Reminder Agent', icon: Bell, action: 'Sent monthly rent reminder to 9 commercial tenants (Email)', outcome: 'Sent' },
+        { id: 3, time: 'Yesterday, 1:30 PM', actor: 'Maintenance Triage Agent', icon: Wrench, action: 'Classified Building Common elevator fault as P1 - Emergency, dispatched Metro Elevator Services', outcome: 'Dispatched' },
+        { id: 4, time: '3 days ago, 8:50 AM', actor: 'Reminder Agent', icon: Bell, action: 'Sent late rent warning + $400 fee notice to Vantage Legal Partners (Suite 120)', outcome: 'Sent' },
+      ],
+      reviews: [
+        { id: 1, author: 'Rachel Kim', rating: 3, date: '5 days ago', comment: 'Parking garage lighting is dim at night, otherwise a solid business location.' },
+        { id: 2, author: 'Marcus Feld', rating: 5, date: '3 weeks ago', comment: 'Professional building, responsive management, great foot traffic for our practice.' }
+      ],
+    },
+  };
+
+  const current = propertiesData[selectedPropertyId];
+
+  // ============================================================
+  // PAYMENT ACTIVITY - front-end-only state, seeded with a couple of
+  // realistic entries per property so the log doesn't start empty.
+  // Each entry here is exactly what will become one `ledger_entries`
+  // INSERT once this is wired to Supabase.
+  // ============================================================
+  const [paymentActivity, setPaymentActivity] = useState({
+    sunset: [
+      { id: 's1', time: '2 days ago', type: 'missed', text: 'Missed payment recorded for Unit 301 (James Smith) — $100 late fee applied' },
+      { id: 's2', time: '5 days ago', type: 'missed', text: 'Missed payment recorded for Unit 102 (Sarah Jenkins) — $50 late fee applied' },
+    ],
+    oceanpalm: [
+      { id: 'o1', time: '2 days ago', type: 'missed', text: 'Missed payment recorded for Unit 2A (Lena Kowalski) — $75 late fee applied' },
+    ],
+    aventura: [
+      { id: 'a1', time: '7 days ago', type: 'missed', text: 'Missed payment recorded for Suite 120 (Vantage Legal Partners) — $400 late fee applied' },
+    ],
+  });
+
+  // Overrides applied on top of the base unitLedger status/lateFees when a
+  // payment action is logged, keyed by "propertyId:unitId".
+  const [unitStatusOverrides, setUnitStatusOverrides] = useState({});
+
+  const getDisplayUnit = (u) => {
+    const override = unitStatusOverrides[`${selectedPropertyId}:${u.id}`];
+    return override ? { ...u, ...override } : u;
+  };
+
+  const [paymentModal, setPaymentModal] = useState(null); // { unit, type } | null
+  const [paymentModalAmount, setPaymentModalAmount] = useState('');
+  const [paymentModalNote, setPaymentModalNote] = useState('');
+
+  const openPaymentAction = (unit, type) => {
+    if (type === 'partial' || type === 'extension') {
+      setPaymentModal({ unit, type });
+      setPaymentModalAmount('');
+      setPaymentModalNote('');
+      return;
+    }
+    applyPaymentAction(unit, type);
+  };
+
+  const applyPaymentAction = (unit, type, amount, note) => {
+    const key = `${selectedPropertyId}:${unit.id}`;
+    let statusUpdate = {};
+    let text = '';
+
+    if (type === 'paid') {
+      statusUpdate = { status: 'Paid', lateFees: 0 };
+      text = `Full rent payment logged for ${current.unitLabel} ${unit.id} (${unit.tenant}) — $${unit.rent.toLocaleString()}`;
+    } else if (type === 'missed') {
+      const newLateFees = (unit.lateFees || 0) + 50;
+      statusUpdate = { status: 'Missed Payment', lateFees: newLateFees };
+      text = `Missed payment recorded for ${current.unitLabel} ${unit.id} (${unit.tenant}) — $50 late fee applied`;
+    } else if (type === 'partial') {
+      statusUpdate = { status: `Partial Payment ($${amount} of $${unit.rent.toLocaleString()})` };
+      text = `Partial payment of $${amount} logged for ${current.unitLabel} ${unit.id} (${unit.tenant})`;
+    } else if (type === 'extension') {
+      statusUpdate = { status: `Extension Granted${note ? ' — ' + note : ''}` };
+      text = `Payment extension granted for ${current.unitLabel} ${unit.id} (${unit.tenant})${note ? ': ' + note : ''}`;
+    }
+
+    setUnitStatusOverrides((prev) => ({ ...prev, [key]: statusUpdate }));
+    setPaymentActivity((prev) => ({
+      ...prev,
+      [selectedPropertyId]: [{ id: Date.now(), time: 'Just now', type, text }, ...(prev[selectedPropertyId] || [])],
+    }));
+    setPaymentModal(null);
+  };
+
+  const confirmPaymentModal = () => {
+    if (!paymentModal) return;
+    const { unit, type } = paymentModal;
+    if (type === 'partial' && !paymentModalAmount) return;
+    applyPaymentAction(unit, type, paymentModalAmount, paymentModalNote);
+  };
+
+  // ============================================================
+  // TENANT COMMUNICATIONS LOG - separate from maintenance requests on
+  // purpose. A noise complaint or billing dispute isn't a repair ticket,
+  // but still needs a timestamped record. Maps onto a new
+  // `tenant_communications` table (not yet in schema.sql).
+  // ============================================================
+  const [tenantComms, setTenantComms] = useState({
+    sunset: [
+      { id: 'c1', time: '3 days ago', unitId: '201', tenant: 'David Miller', category: 'Complaint', channel: 'Email', message: 'Hallway lighting on the 2nd floor has been flickering for a week.', status: 'Open' },
+      { id: 'c2', time: '5 days ago', unitId: '202', tenant: 'Elena Rostova', category: 'Billing', channel: 'SMS', message: 'Asked for a copy of last month\'s itemized charges.', status: 'Resolved' },
+    ],
+    oceanpalm: [
+      { id: 'c1', time: '4 days ago', unitId: '1A', tenant: 'Natalie Brooks', category: 'Complaint', channel: 'Email', message: 'Pool gate latch is broken, safety concern for kids in the building.', status: 'Open' },
+    ],
+    aventura: [
+      { id: 'c1', time: '6 days ago', unitId: '200', tenant: 'Pure Barre Aventura', category: 'General', channel: 'Email', message: 'Asked about adding a second reserved parking spot for staff.', status: 'Resolved' },
+    ],
+  });
+
+  const [showCommsForm, setShowCommsForm] = useState(false);
+  const [commsForm, setCommsForm] = useState({ unitId: '', category: 'Complaint', channel: 'Email', message: '' });
+
+  const submitCommsForm = () => {
+    if (!commsForm.unitId || !commsForm.message) return;
+    const unit = current.unitLedger.find((u) => u.id === commsForm.unitId);
+    setTenantComms((prev) => ({
+      ...prev,
+      [selectedPropertyId]: [
+        { id: Date.now(), time: 'Just now', unitId: commsForm.unitId, tenant: unit?.tenant || '—', category: commsForm.category, channel: commsForm.channel, message: commsForm.message, status: 'Open' },
+        ...(prev[selectedPropertyId] || []),
+      ],
+    }));
+    setCommsForm({ unitId: '', category: 'Complaint', channel: 'Email', message: '' });
+    setShowCommsForm(false);
+  };
+
+  const resolveComm = (id) => {
+    setTenantComms((prev) => ({
+      ...prev,
+      [selectedPropertyId]: prev[selectedPropertyId].map((c) => (c.id === id ? { ...c, status: 'Resolved' } : c)),
+    }));
+  };
+
+  const handlePropertyChange = (id) => {
+    setSelectedPropertyId(id);
+    setActiveScenario(null);
+    setTenantInput('');
+    setTenantResponse('');
+    setActiveMaintScenario(null);
+    setMaintInput('');
+    setMaintTriage(null);
+    setSelectedReview(null);
+    setReviewReply('');
+    setPaymentModal(null);
+    setShowCommsForm(false);
+  };
+
+  const [tenantInput, setTenantInput] = useState('');
+  const [tenantResponse, setTenantResponse] = useState('');
+  const [activeScenario, setActiveScenario] = useState(null);
+  const [maintInput, setMaintInput] = useState('');
+  const [maintTriage, setMaintTriage] = useState(null);
+  const [activeMaintScenario, setActiveMaintScenario] = useState(null);
+  const [selectedReview, setSelectedReview] = useState(null);
+  const [reviewReply, setReviewReply] = useState('');
+
+  const tenantScenarios = useMemo(() => {
+    const t = current.unitLedger;
+    const pick = (i) => t[i % t.length];
+    const propName = current.label.replace(/\s*\(.*\)/, '');
+    const unitWord = current.unitLabel;
+
+    const templates = [
+      {
+        id: 'late-fee',
+        label: 'Late Fee Waiver Request',
+        buildMessage: () => `Hi, I paid my rent today. Can you waive the late fee please? It was an honest mistake.`,
+        buildReply: (u) => `Dear ${u.tenant.split(' ')[0]},\n\nThank you for reaching out. Per Section 4.2 of your signed lease agreement for ${propName}, rent is due on the 1st with a grace period through the 3rd. As payment was received late, the standard late fee has been applied to your balance for ${unitWord} ${u.id}.\n\nWe're unable to waive the fee, but if this is a one-time circumstance we can set up a split-payment plan for next month if requested at least 10 days in advance.\n\nBest regards,\n${propName} Management`
+      },
+      {
+        id: 'noise',
+        label: current.unitLabel === 'Suite' ? 'Shared Space / Noise Complaint' : 'Noise Complaint',
+        buildMessage: () => current.unitLabel === 'Suite'
+          ? `The tenant in the suite next to us has been running loud equipment after hours, it's audible through the wall.`
+          : `The tenants in the unit above me have been extremely loud after 11pm almost every night this week. Can something be done?`,
+        buildReply: (u) => `Hi there,\n\nThank you for letting us know regarding ${unitWord} ${u.id} — quiet hours and shared-space conduct are outlined in Section 7.1 of the lease. We've logged this and will be sending a courtesy notice to the neighboring tenant reminding them of the policy.\n\nIf this continues after the notice, please document dates/times so we can escalate per Section 7.3. We take this seriously.\n\nBest regards,\n${propName} Management`
+      },
+      {
+        id: 'renewal',
+        label: 'Lease Renewal Question',
+        buildMessage: (u) => `I noticed our lease for ${unitWord} ${u.id} ends soon. What are our renewal options and will rent be going up?`,
+        buildReply: (u) => `Hi ${u.tenant.split(' ')[0]},\n\nYour current lease for ${unitWord} ${u.id} runs through ${u.leaseEnd}. Per Section 2.4, we're required to provide renewal terms at least 60 days prior to expiration.\n\nBased on current market rates for comparable spaces in this area, expect a modest adjustment, typically in the 3-5% range. We'd love to have you stay — let us know if you'd like to discuss terms before the formal notice goes out.\n\nBest regards,\n${propName} Management`
+      },
+      {
+        id: 'access',
+        label: current.unitLabel === 'Suite' ? 'After-Hours Access Question' : 'Pet Policy Question',
+        buildMessage: () => current.unitLabel === 'Suite'
+          ? `A couple of our staff need to work late this week. Is after-hours building access allowed?`
+          : `I am thinking about adopting a cat. Is that allowed under my lease and is there a pet deposit?`,
+        buildReply: (u) => current.unitLabel === 'Suite'
+          ? `Hi ${u.tenant.split(' ')[0]} team,\n\nYes — per Section 8 of your commercial lease, after-hours access is permitted with a registered building fob. Staff working past 8pm should badge in at the rear entrance; security is on-site until midnight.\n\nLet us know if you need additional fobs issued for staff.\n\nBest regards,\n${propName} Management`
+          : `Hi ${u.tenant.split(' ')[0]},\n\nGreat question! Per Section 9 (Pet Policy) of your lease, cats are permitted with a one-time $300 pet deposit and $35/month pet rent. We'll need an updated pet addendum signed before move-in.\n\nBest regards,\n${propName} Management`
+      },
+      {
+        id: 'parking',
+        label: 'Parking / Guest Policy',
+        buildMessage: () => current.unitLabel === 'Suite'
+          ? `One of our clients got a warning notice for parking in the visitor lot. Is there a permit process?`
+          : `My guest parked in the visitor lot last night and said there was a warning notice on their windshield. Do they need a permit?`,
+        buildReply: (u) => `Hi ${u.tenant.split(' ')[0]},\n\nYes — per Section 6.3, visitor parking requires a permit issued through the front office, valid for the visit duration. Without one, vehicles in the visitor lot may receive a courtesy warning before towing eligibility on a repeat occurrence.\n\nI can issue a permit now if you send over the plate and expected time.\n\nBest regards,\n${propName} Management`
+      },
+    ];
+
+    return templates.map((tpl, i) => {
+      const u = pick(i);
+      return { id: tpl.id, label: tpl.label, message: tpl.buildMessage(u), reply: tpl.buildReply(u) };
+    });
+  }, [current]);
+
+  const handleScenarioSelect = (scenario) => {
+    setActiveScenario(scenario.id);
+    setTenantInput(scenario.message);
+    setTenantResponse('');
+  };
+
+  const handleTenantAI = () => {
+    if (!tenantInput) return;
+    const matched = tenantScenarios.find((s) => s.id === activeScenario);
+    if (matched) {
+      setTenantResponse(matched.reply);
+    } else {
+      setTenantResponse(
+        `Dear Tenant,\n\nThank you for reaching out. We've received your message and are reviewing it against your lease terms for ${current.label.replace(/\s*\(.*\)/, '')}. A member of our team (or the automated lease-aware assistant, once connected to a live model) will follow up shortly with a specific answer.\n\nBest regards,\n${current.label.replace(/\s*\(.*\)/, '')} Management`
+      );
+    }
+  };
+
+  const maintScenarios = useMemo(() => {
+    const t = current.unitLedger;
+    const pick = (i) => t[i % t.length];
+    const unitWord = current.unitLabel;
+
+    const templates = [
+      {
+        id: 'leak',
+        label: 'Active Water Leak',
+        message: (u) => `There is water leaking heavily from under the sink onto the floor in ${unitWord} ${u.id}.`,
+        result: (u) => ({
+          urgency: 'P1 - EMERGENCY',
+          category: 'Plumbing / Active Water Leak',
+          action: 'Automated Dispatch Triggered',
+          assignedVendor: 'Rapid Drain Plumbing (Priority Contract #482)',
+          tenantNotice: `Emergency vendor dispatched to ${unitWord} ${u.id}. Please shut off the nearest water valve if accessible. Estimated arrival: 45 mins.`
+        })
+      },
+      {
+        id: 'hvac',
+        label: unitWord === 'Suite' ? 'HVAC Outage (Business Hours)' : 'A/C Out (Florida Heat)',
+        message: (u) => unitWord === 'Suite'
+          ? `The HVAC in ${unitWord} ${u.id} stopped working and it's affecting our staff and customers.`
+          : `My air conditioning stopped working overnight and it is already 95 degrees inside ${unitWord} ${u.id}.`,
+        result: (u) => ({
+          urgency: 'P2 - URGENT',
+          category: 'HVAC / No Cooling',
+          action: 'Automated Dispatch Triggered (same-day)',
+          assignedVendor: 'South Florida HVAC (Standard Contract)',
+          tenantNotice: `We've dispatched HVAC same-day for ${unitWord} ${u.id}. Estimated arrival window: 1-4pm today.`
+        })
+      },
+      {
+        id: 'security',
+        label: unitWord === 'Suite' ? 'Suite Entry / Lock Issue' : 'Broken Door Lock',
+        message: (u) => `The lock on ${unitWord} ${u.id} is broken and won't latch shut. We're worried about security.`,
+        result: (u) => ({
+          urgency: 'P1 - EMERGENCY (Security)',
+          category: 'Locksmith / Security',
+          action: 'Automated Dispatch Triggered',
+          assignedVendor: 'SecureLock 24/7 (Emergency Line)',
+          tenantNotice: `A locksmith has been dispatched immediately to ${unitWord} ${u.id} due to the security concern. Estimated arrival: 30 mins.`
+        })
+      },
+      {
+        id: 'cosmetic',
+        label: 'Minor Cosmetic Request',
+        message: (u) => `There is a small paint chip on the wall near ${unitWord} ${u.id}. Not urgent, just wanted to flag it.`,
+        result: (u) => ({
+          urgency: 'P4 - LOW / SCHEDULED',
+          category: 'Cosmetic / Paint',
+          action: 'Added to Next Scheduled Maintenance Pass',
+          assignedVendor: 'In-house maintenance (batched with next visit)',
+          tenantNotice: `Thanks for flagging! This has been added to our maintenance list for ${unitWord} ${u.id}, typically handled within 2-3 weeks.`
+        })
+      },
+    ];
+
+    return templates.map((tpl, i) => {
+      const u = pick(i);
+      return { id: tpl.id, label: tpl.label, message: tpl.message(u), result: tpl.result(u) };
+    });
+  }, [current]);
+
+  const handleMaintScenarioSelect = (scenario) => {
+    setActiveMaintScenario(scenario.id);
+    setMaintInput(scenario.message);
+    setMaintTriage(null);
+  };
+
+  const handleMaintAI = () => {
+    if (!maintInput) return;
+    const matched = maintScenarios.find((s) => s.id === activeMaintScenario);
+    if (matched) {
+      setMaintTriage({ ...matched.result, scenarioId: matched.id });
+    } else {
+      setMaintTriage({
+        urgency: 'P3 - STANDARD (Pending Review)',
+        category: 'Uncategorized',
+        action: 'Flagged for Manager Review',
+        assignedVendor: 'Not yet assigned',
+        tenantNotice: 'Thanks for the report. Our team is reviewing the details and will follow up shortly with next steps.'
+      });
+    }
+  };
+
+  const handleReviewAI = (rev) => {
+    setSelectedReview(rev);
+    if (rev.rating <= 3) {
+      setReviewReply(
+        `Hi ${rev.author.split(' ')[0]}, thank you for taking the time to share this feedback. We're sorry to hear about your experience and would like to make it right — please reach out to our office directly so we can address this further.`
+      );
+    } else {
+      setReviewReply(
+        `Thank you so much for the ${rev.rating}-star review, ${rev.author.split(' ')[0]}! We're thrilled to hear about your experience. Best wishes!`
+      );
+    }
+  };
+
+  const NAV_ITEMS = [
+    { id: 'analytics', label: 'Executive Analytics', Icon: BarChart3 },
+    { id: 'ledger', label: 'Unit Ledger & Expenses', Icon: Wallet },
+    { id: 'tenants', label: 'Tenants & Leases', Icon: Users },
+    { id: 'reminders', label: 'Automated Reminders', Icon: Bell },
+    { id: 'tenant-comms', label: 'Tenant Communications', Icon: Inbox },
+    { id: 'tenant-ai', label: 'Tenant Message AI', Icon: MessageSquare },
+    { id: 'maintenance', label: 'Maintenance Triage', Icon: Wrench },
+    { id: 'reputation', label: 'Reputation Manager', Icon: Star },
+  ];
+
+  return (
+    <div className="font-sans flex h-screen bg-slate-950 text-slate-100 overflow-hidden selection:bg-indigo-500/30 selection:text-white">
+      <style jsx global>{`
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+        * { scrollbar-width: thin; scrollbar-color: rgb(51 65 85) transparent; }
+        *::-webkit-scrollbar { width: 8px; height: 8px; }
+        *::-webkit-scrollbar-thumb { background-color: rgb(51 65 85); border-radius: 999px; }
+        *::-webkit-scrollbar-track { background: transparent; }
+      `}</style>
+
+      {/* PAYMENT MODAL - only shown for Partial Payment / Extension, which need input */}
+      {paymentModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-white text-sm">
+                {paymentModal.type === 'partial' ? 'Log Partial Payment' : 'Grant Payment Extension'}
+              </h3>
+              <button onClick={() => setPaymentModal(null)} className="text-slate-500 hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              {current.unitLabel} {paymentModal.unit.id} — {paymentModal.unit.tenant}
+            </p>
+            {paymentModal.type === 'partial' ? (
+              <div className="mb-4">
+                <label className="text-xs text-slate-400 block mb-1">Amount received ($)</label>
+                <input
+                  type="number"
+                  value={paymentModalAmount}
+                  onChange={(e) => setPaymentModalAmount(e.target.value)}
+                  placeholder={`e.g. ${Math.round(paymentModal.unit.rent / 2)}`}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                />
+              </div>
+            ) : (
+              <div className="mb-4">
+                <label className="text-xs text-slate-400 block mb-1">Extension note (optional)</label>
+                <input
+                  type="text"
+                  value={paymentModalNote}
+                  onChange={(e) => setPaymentModalNote(e.target.value)}
+                  placeholder="e.g. new due date 9/15"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                />
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button onClick={() => setPaymentModal(null)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-lg text-sm font-medium transition-colors">
+                Cancel
+              </button>
+              <button onClick={confirmPaymentModal} className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white py-2 rounded-lg text-sm font-medium transition-colors">
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SIDEBAR NAVIGATION */}
+      <aside className="w-64 bg-slate-950 border-r border-slate-800/80 flex flex-col justify-between shrink-0">
+        <div>
+          <div className="p-6 border-b border-slate-800/80 flex items-center gap-3">
+            <div className="h-8 w-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white">
+              <Building2 size={18} strokeWidth={2} />
+            </div>
+            <div>
+              <h1 className="font-semibold text-[15px] leading-none text-white tracking-tight">PropOps AI</h1>
+              <span className="text-[11px] text-slate-500">Enterprise Dashboard</span>
+            </div>
+          </div>
+
+          <div className="p-4">
+            <label className="text-[11px] font-medium text-slate-500 uppercase tracking-wider block mb-2">Select Property</label>
+            <div className="relative">
+              <select
+                value={selectedPropertyId}
+                onChange={(e) => handlePropertyChange(e.target.value)}
+                className="w-full appearance-none bg-slate-900 border border-slate-700/80 rounded-lg pl-3 pr-9 py-2 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus:border-indigo-500 transition-colors"
+              >
+                {Object.values(propertiesData).map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+              <ChevronDown size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            </div>
+          </div>
+
+          <nav className="mt-2 px-3 space-y-0.5">
+            {NAV_ITEMS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+                  activeTab === id
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                }`}
+              >
+                <Icon size={16} strokeWidth={2} className="shrink-0" />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="p-4 border-t border-slate-800/80 flex items-center gap-3">
+          <div className="h-2 w-2 bg-emerald-500 rounded-full animate-pulse shrink-0"></div>
+          <div className="text-xs">
+            <p className="font-medium text-slate-300">Claude AI Connected</p>
+            <p className="text-slate-500">Auto-Sync Active</p>
+          </div>
+        </div>
+      </aside>
+
+      {/* MAIN CONTENT AREA */}
+      <main className="flex-1 overflow-y-auto bg-slate-950 p-8">
+
+        <header className="flex justify-between items-center mb-8 pb-4 border-b border-slate-800/80">
+          <div>
+            <h2 className="text-xl font-semibold text-white tracking-tight capitalize">{activeTab.replace('-', ' ')}</h2>
+            <p className="text-slate-400 text-sm mt-0.5">Managing operations for <span className="text-indigo-400 font-medium">{current.label}</span></p>
+          </div>
+          <button className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">
+            <Plus size={15} /> Add New Entry
+          </button>
+        </header>
+
+        {/* 1. EXECUTIVE ANALYTICS */}
+        {activeTab === 'analytics' && (
+          <FadeIn keyProp={selectedPropertyId + '-analytics'}>
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+              <div className="lg:col-span-2 bg-indigo-600 rounded-2xl p-6 flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-indigo-100/80 uppercase tracking-wide">Net Operating Income</span>
+                  <TrendingUp size={16} className="text-indigo-100/70" />
+                </div>
+                <div className="mt-6">
+                  <p className="text-4xl font-semibold text-white tabular-nums">${current.financials.netOperatingIncome.toLocaleString()}</p>
+                  <p className="text-xs text-indigo-100/70 mt-1.5">Monthly net cash flow, {current.label.replace(/\s*\(.*\)/, '')}</p>
+                </div>
+              </div>
+
+              <div className="lg:col-span-3 grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-slate-800 bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+                <div className="p-5">
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Gross Revenue</p>
+                  <p className="text-xl font-semibold text-white mt-1.5 tabular-nums">${current.financials.grossRevenue.toLocaleString()}</p>
+                  <p className="text-xs text-emerald-400 mt-1">↑ 4.2% vs last month</p>
+                </div>
+                <div className="p-5">
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Operating Expenses</p>
+                  <p className="text-xl font-semibold text-white mt-1.5 tabular-nums">${current.financials.operatingExpenses.toLocaleString()}</p>
+                  <p className="text-xs text-slate-500 mt-1">Repairs & utilities</p>
+                </div>
+                <div className="p-5">
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">Occupancy</p>
+                  <p className="text-xl font-semibold text-white mt-1.5 tabular-nums">{current.financials.occupancyRate}</p>
+                  <p className="text-xs text-slate-500 mt-1">{current.financials.occupiedUnits} / {current.financials.totalUnits} {current.unitLabel}s occupied</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                <Sparkles size={15} className="text-indigo-400" /> AI Portfolio Insights
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div className="p-4 bg-slate-900/70 border border-slate-800 rounded-xl">
+                  <span className="text-emerald-400 font-medium text-xs uppercase tracking-wide">Revenue Optimization</span>
+                  <p className="text-slate-300 mt-2 leading-relaxed">
+                    {current.unitLedger[0]?.tenant}'s lease ({current.unitLabel} {current.unitLedger[0]?.id}) is one to watch — current market rate for comparable {current.unitLabel.toLowerCase()}s in this area trends above the current rent on file.
+                  </p>
+                </div>
+                <div className="p-4 bg-slate-900/70 border border-slate-800 rounded-xl">
+                  <span className="text-rose-400 font-medium text-xs uppercase tracking-wide">Expense Anomaly Alert</span>
+                  <p className="text-slate-300 mt-2 leading-relaxed">
+                    {current.expenses[0]?.unit} shows elevated {current.expenses[0]?.category.toLowerCase()} spend this month relative to the property average — recommend a follow-up inspection.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                <Zap size={15} className="text-amber-400" /> Live Automated Activity
+                <span className="text-[11px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full ml-1">Agents Running</span>
+              </h3>
+              <div className="space-y-1.5">
+                {current.activityLog.map((a) => {
+                  const ActorIcon = a.icon;
+                  return (
+                    <div key={a.id} className="flex items-start gap-3 p-3 bg-slate-900/70 border border-slate-800 rounded-xl text-sm">
+                      <div className="h-7 w-7 rounded-lg bg-slate-800 flex items-center justify-center shrink-0 mt-0.5">
+                        <ActorIcon size={14} className="text-indigo-300" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-slate-200">
+                          <span className="font-medium text-indigo-300">{a.actor}:</span> {a.action}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">{a.time}</p>
+                      </div>
+                      <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap ${
+                        a.outcome === 'Sent' || a.outcome === 'Dispatched'
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                          : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                      }`}>
+                        {a.outcome}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          </FadeIn>
+        )}
+
+        {/* 2. UNIT LEDGER & EXPENSES */}
+        {activeTab === 'ledger' && (
+          <FadeIn keyProp={selectedPropertyId + '-ledger'}>
+          <div className="space-y-6">
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl overflow-hidden">
+              <div className="p-4 border-b border-slate-800 flex justify-between items-center">
+                <h3 className="font-semibold text-white text-sm">Income per {current.unitLabel} Breakdown</h3>
+                <span className="text-xs text-slate-500">Includes base rent, late fees, and dedicated maintenance</span>
+              </div>
+              <table className="w-full text-left text-sm text-slate-300">
+                <thead className="bg-slate-900/80 text-[11px] text-slate-500 uppercase tracking-wide">
+                  <tr>
+                    <th className="p-4 font-medium">{current.unitLabel} #</th>
+                    <th className="p-4 font-medium">{current.tenantLabel}</th>
+                    <th className="p-4 font-medium">Base Rent</th>
+                    <th className="p-4 font-medium">Late Fees</th>
+                    <th className="p-4 font-medium">Repair Costs</th>
+                    <th className="p-4 font-medium">Net Income</th>
+                    <th className="p-4 font-medium">Status</th>
+                    <th className="p-4 font-medium">Log Payment</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/70">
+                  {current.unitLedger.map((baseUnit) => {
+                    const u = getDisplayUnit(baseUnit);
+                    return (
+                    <tr key={u.id} className="hover:bg-slate-900/60 transition-colors">
+                      <td className="p-4 font-medium text-white">{current.unitLabel} {u.id}</td>
+                      <td className="p-4">{u.tenant}</td>
+                      <td className="p-4 tabular-nums">${u.rent.toLocaleString()}</td>
+                      <td className="p-4 tabular-nums text-amber-400">${u.lateFees}</td>
+                      <td className="p-4 tabular-nums text-rose-400">-${u.repairs}</td>
+                      <td className="p-4 tabular-nums font-semibold text-emerald-400">${u.netIncome.toLocaleString()}</td>
+                      <td className="p-4">
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium border whitespace-nowrap ${
+                          u.status === 'Paid' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                          u.status === 'Missed Payment' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' :
+                          u.status.startsWith('Partial') ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                          u.status.startsWith('Extension') ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20' :
+                          'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                        }`}>
+                          {u.status}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <div className="flex items-center gap-1">
+                          <button title="Log Payment" onClick={() => openPaymentAction(baseUnit, 'paid')} className="h-7 w-7 flex items-center justify-center rounded-md bg-slate-800 hover:bg-emerald-600 text-emerald-400 hover:text-white transition-colors">
+                            <CircleDollarSign size={14} />
+                          </button>
+                          <button title="Log Missed Payment" onClick={() => openPaymentAction(baseUnit, 'missed')} className="h-7 w-7 flex items-center justify-center rounded-md bg-slate-800 hover:bg-rose-600 text-rose-400 hover:text-white transition-colors">
+                            <XCircle size={14} />
+                          </button>
+                          <button title="Log Partial Payment" onClick={() => openPaymentAction(baseUnit, 'partial')} className="h-7 w-7 flex items-center justify-center rounded-md bg-slate-800 hover:bg-amber-600 text-amber-400 hover:text-white transition-colors">
+                            <Percent size={14} />
+                          </button>
+                          <button title="Grant Payment Extension" onClick={() => openPaymentAction(baseUnit, 'extension')} className="h-7 w-7 flex items-center justify-center rounded-md bg-slate-800 hover:bg-indigo-600 text-indigo-300 hover:text-white transition-colors">
+                            <CalendarClock size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );})}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-4">
+              <h3 className="font-semibold text-white text-sm mb-3 px-1">Recent Payment Activity</h3>
+              <div className="space-y-1.5">
+                {(paymentActivity[selectedPropertyId] || []).length === 0 && (
+                  <p className="text-slate-500 text-sm px-1">No payment actions logged yet for this property.</p>
+                )}
+                {(paymentActivity[selectedPropertyId] || []).map((p) => (
+                  <div key={p.id} className="flex justify-between items-center p-3 bg-slate-900/70 border border-slate-800 rounded-xl text-sm">
+                    <div className="flex items-center gap-2.5">
+                      <span className={`h-6 w-6 rounded-md flex items-center justify-center shrink-0 ${
+                        p.type === 'paid' ? 'bg-emerald-500/15 text-emerald-400' :
+                        p.type === 'missed' ? 'bg-rose-500/15 text-rose-400' :
+                        p.type === 'partial' ? 'bg-amber-500/15 text-amber-400' :
+                        'bg-indigo-500/15 text-indigo-300'
+                      }`}>
+                        {p.type === 'paid' && <CircleDollarSign size={12} />}
+                        {p.type === 'missed' && <XCircle size={12} />}
+                        {p.type === 'partial' && <Percent size={12} />}
+                        {p.type === 'extension' && <CalendarClock size={12} />}
+                      </span>
+                      <p className="text-slate-200">{p.text}</p>
+                    </div>
+                    <span className="text-xs text-slate-500 shrink-0 ml-3">{p.time}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-4">
+              <h3 className="font-semibold text-white text-sm mb-3 px-1">Recent Categorized Expenses</h3>
+              <div className="space-y-1.5">
+                {current.expenses.map((exp) => (
+                  <div key={exp.id} className="flex justify-between items-center p-3 bg-slate-900/70 border border-slate-800 rounded-xl text-sm">
+                    <div>
+                      <p className="font-medium text-white">{exp.vendor} <span className="text-slate-500 font-normal">({exp.category})</span></p>
+                      <p className="text-xs text-slate-500 mt-0.5">{exp.unit} • {exp.date}</p>
+                    </div>
+                    <span className="font-semibold text-rose-400 tabular-nums">-${exp.amount.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          </FadeIn>
+        )}
+
+        {/* 3. TENANTS & LEASES */}
+        {activeTab === 'tenants' && (
+          <FadeIn keyProp={selectedPropertyId + '-tenants'}>
+          <div className="bg-slate-900/40 border border-slate-800 rounded-2xl overflow-hidden">
+            <table className="w-full text-left text-sm text-slate-300">
+              <thead className="bg-slate-900/80 text-[11px] text-slate-500 uppercase tracking-wide">
+                <tr>
+                  <th className="p-4 font-medium">{current.unitLabel}</th>
+                  <th className="p-4 font-medium">{current.tenantLabel} Name</th>
+                  <th className="p-4 font-medium">Lease Expiration</th>
+                  <th className="p-4 font-medium">Contract Copy</th>
+                  <th className="p-4 font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/70">
+                {current.unitLedger.map((u) => (
+                  <tr key={u.id} className="hover:bg-slate-900/60 transition-colors">
+                    <td className="p-4 font-medium text-white">{current.unitLabel} {u.id}</td>
+                    <td className="p-4">{u.tenant}</td>
+                    <td className="p-4 tabular-nums">{u.leaseEnd}</td>
+                    <td className="p-4">
+                      <button className="flex items-center gap-1.5 text-indigo-400 hover:text-indigo-300 hover:underline">
+                        <FileText size={14} /> {u.document}
+                      </button>
+                    </td>
+                    <td className="p-4">
+                      <button className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded-lg font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+                        Manage Lease
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          </FadeIn>
+        )}
+
+        {/* 4. AUTOMATED REMINDERS */}
+        {activeTab === 'reminders' && (
+          <FadeIn keyProp={selectedPropertyId + '-reminders'}>
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {current.reminders.map((r) => (
+                <div key={r.id} className="bg-slate-900/40 border border-slate-800 p-5 rounded-2xl flex flex-col justify-between">
+                  <div>
+                    <div className="flex justify-between items-start mb-2 gap-2">
+                      <h4 className="font-semibold text-white text-sm">{r.title}</h4>
+                      <span className="text-[11px] font-medium bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/25 whitespace-nowrap">{r.type}</span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-2">Target: <span className="text-slate-200">{r.recipient}</span></p>
+                    <p className="text-xs text-slate-400">Trigger Rule: <span className="text-slate-200">{r.triggerDate}</span></p>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center">
+                    <span className="text-xs text-emerald-400 font-medium flex items-center gap-1.5">
+                      <CheckCircle2 size={13} /> {r.status}
+                    </span>
+                    <button className="text-xs text-slate-400 hover:text-white transition-colors">Edit Rule</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-sm font-semibold text-white mb-3">Recently Sent (Automated)</h3>
+              <div className="space-y-1.5">
+                {current.activityLog.filter((a) => a.actor === 'Reminder Agent').map((a) => (
+                  <div key={a.id} className="flex justify-between items-center p-3 bg-slate-900/70 border border-slate-800 rounded-xl text-sm">
+                    <p className="text-slate-200">{a.action}</p>
+                    <span className="text-xs text-slate-500 shrink-0 ml-3">{a.time}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          </FadeIn>
+        )}
+
+        {/* 5. TENANT COMMUNICATIONS LOG */}
+        {activeTab === 'tenant-comms' && (
+          <FadeIn keyProp={selectedPropertyId + '-tenant-comms'}>
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <p className="text-xs text-slate-400 max-w-lg">
+                A running record of tenant complaints and inquiries across every channel — separate from maintenance
+                tickets, so a noise complaint or billing dispute still has a timestamped paper trail.
+              </p>
+              <button
+                onClick={() => setShowCommsForm((v) => !v)}
+                className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors shrink-0 ml-4"
+              >
+                <Plus size={14} /> Log Communication
+              </button>
+            </div>
+
+            {showCommsForm && (
+              <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-5 space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">{current.unitLabel} / {current.tenantLabel}</label>
+                    <select
+                      value={commsForm.unitId}
+                      onChange={(e) => setCommsForm((f) => ({ ...f, unitId: e.target.value }))}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    >
+                      <option value="">Select...</option>
+                      {current.unitLedger.map((u) => (
+                        <option key={u.id} value={u.id}>{current.unitLabel} {u.id} — {u.tenant}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">Category</label>
+                    <select
+                      value={commsForm.category}
+                      onChange={(e) => setCommsForm((f) => ({ ...f, category: e.target.value }))}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    >
+                      <option>Complaint</option>
+                      <option>Billing</option>
+                      <option>General</option>
+                      <option>Maintenance</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1">Channel</label>
+                    <select
+                      value={commsForm.channel}
+                      onChange={(e) => setCommsForm((f) => ({ ...f, channel: e.target.value }))}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    >
+                      <option>Email</option>
+                      <option>SMS</option>
+                      <option>Phone</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Message / summary</label>
+                  <textarea
+                    value={commsForm.message}
+                    onChange={(e) => setCommsForm((f) => ({ ...f, message: e.target.value }))}
+                    className="w-full h-20 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    placeholder="What did the tenant say?"
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setShowCommsForm(false)} className="text-xs px-3 py-2 rounded-lg text-slate-400 hover:text-white transition-colors">Cancel</button>
+                  <button onClick={submitCommsForm} className="text-xs px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors">Save Entry</button>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {(tenantComms[selectedPropertyId] || []).map((c) => (
+                <div key={c.id} className="bg-slate-900/40 border border-slate-800 rounded-2xl p-4">
+                  <div className="flex justify-between items-start gap-3 mb-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-white text-sm">{c.tenant}</span>
+                      <span className="text-xs text-slate-500">{current.unitLabel} {c.unitId}</span>
+                      <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${commsCategoryStyle[c.category] || commsCategoryStyle.General}`}>
+                        {c.category}
+                      </span>
+                      <span className="text-[11px] text-slate-500 border border-slate-700 rounded-full px-2 py-0.5">{c.channel}</span>
+                    </div>
+                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap ${
+                      c.status === 'Open' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                    }`}>
+                      {c.status}
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-300 leading-relaxed">{c.message}</p>
+                  <div className="flex justify-between items-center mt-2.5">
+                    <span className="text-xs text-slate-500">{c.time}</span>
+                    {c.status === 'Open' && (
+                      <button onClick={() => resolveComm(c.id)} className="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1">
+                        <CheckCircle2 size={13} /> Mark Resolved
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {(tenantComms[selectedPropertyId] || []).length === 0 && (
+                <p className="text-slate-500 text-sm">No communications logged yet for this property.</p>
+              )}
+            </div>
+          </div>
+          </FadeIn>
+        )}
+
+        {/* 6. TENANT MESSAGE ASSISTANT */}
+        {activeTab === 'tenant-ai' && (
+          <FadeIn keyProp={selectedPropertyId + '-tenant-ai'}>
+          <div className="space-y-6">
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-5">
+              <p className="text-xs text-slate-400 mb-3">Try a realistic {current.tenantLabel.toLowerCase()} message for {current.label} — click one to load it, then generate the reply:</p>
+              <div className="flex flex-wrap gap-2">
+                {tenantScenarios.map((s) => {
+                  const Icon = tenantIconMap[s.id];
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => handleScenarioSelect(s)}
+                      className={`flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border transition-colors ${
+                        activeScenario === s.id
+                          ? 'bg-indigo-600 border-indigo-500 text-white'
+                          : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-indigo-500/60'
+                      }`}
+                    >
+                      <Icon size={13} /> {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl">
+                <h3 className="font-semibold text-white text-sm mb-2 flex items-center gap-2">
+                  <MessageSquare size={15} className="text-indigo-400" /> Incoming {current.tenantLabel} Query
+                </h3>
+                <p className="text-xs text-slate-400 mb-4">Paste raw text from email or SMS, or use a scenario above. AI cross-references lease terms to generate a policy-compliant reply.</p>
+
+                <textarea
+                  value={tenantInput}
+                  onChange={(e) => { setTenantInput(e.target.value); setActiveScenario(null); }}
+                  placeholder="Example: 'Hi, I paid my rent today. Can you waive the late fee please?'"
+                  className="w-full h-36 bg-slate-950 border border-slate-700/80 rounded-xl p-3 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus:border-indigo-500 mb-4 transition-colors"
+                />
+                <button
+                  onClick={handleTenantAI}
+                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                >
+                  <Sparkles size={15} /> Generate Lease-Aware Reply
+                </button>
+              </div>
+
+              <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl flex flex-col justify-between">
+                <div>
+                  <h3 className="font-semibold text-white text-sm mb-2">AI Drafted Output</h3>
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 h-56 text-sm text-slate-300 whitespace-pre-line overflow-y-auto leading-relaxed">
+                    {tenantResponse || <span className="text-slate-600">Generated response will appear here...</span>}
+                  </div>
+                </div>
+                {tenantResponse && (
+                  <button className="mt-4 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400">
+                    <CheckCircle2 size={15} /> Approve & Send to {current.tenantLabel}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+          </FadeIn>
+        )}
+
+        {/* 7. MAINTENANCE TRIAGE */}
+        {activeTab === 'maintenance' && (
+          <FadeIn keyProp={selectedPropertyId + '-maintenance'}>
+          <div className="space-y-6">
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-5">
+              <p className="text-xs text-slate-400 mb-3">Try a realistic maintenance request for {current.label} — click one to load it, then run triage:</p>
+              <div className="flex flex-wrap gap-2">
+                {maintScenarios.map((s) => {
+                  const Icon = maintIconMap[s.id];
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => handleMaintScenarioSelect(s)}
+                      className={`flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border transition-colors ${
+                        activeMaintScenario === s.id
+                          ? 'bg-indigo-600 border-indigo-500 text-white'
+                          : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-indigo-500/60'
+                      }`}
+                    >
+                      <Icon size={13} /> {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl">
+                <h3 className="font-semibold text-white text-sm mb-2 flex items-center gap-2">
+                  <Wrench size={15} className="text-indigo-400" /> Maintenance Request Triage
+                </h3>
+                <p className="text-xs text-slate-400 mb-4">Input a repair issue to auto-determine severity and assign preferred local vendor.</p>
+
+                <textarea
+                  value={maintInput}
+                  onChange={(e) => { setMaintInput(e.target.value); setActiveMaintScenario(null); }}
+                  placeholder={`Example: 'There is water leaking heavily from under the sink in ${current.unitLabel} ${current.unitLedger[0]?.id}.'`}
+                  className="w-full h-36 bg-slate-950 border border-slate-700/80 rounded-xl p-3 text-sm text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus:border-indigo-500 mb-4 transition-colors"
+                />
+                <button
+                  onClick={handleMaintAI}
+                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                >
+                  <AlertTriangle size={15} /> Analyze Priority & Dispatch
+                </button>
+              </div>
+
+              <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl">
+                <h3 className="font-semibold text-white text-sm mb-4">Triage Analysis</h3>
+                {maintTriage ? (
+                  <div className="space-y-4 text-sm">
+                    <div className={`p-3.5 rounded-xl border flex items-start gap-3 ${
+                      maintTriage.urgency.startsWith('P1') ? 'bg-rose-500/10 border-rose-500/25' :
+                      maintTriage.urgency.startsWith('P2') ? 'bg-amber-500/10 border-amber-500/25' :
+                      maintTriage.urgency.startsWith('P3') ? 'bg-indigo-500/10 border-indigo-500/25' :
+                      'bg-slate-800/50 border-slate-700/50'
+                    }`}>
+                      {maintTriage.scenarioId && maintIconMap[maintTriage.scenarioId] && (
+                        (() => { const Icon = maintIconMap[maintTriage.scenarioId]; return <Icon size={18} className="mt-0.5 shrink-0 text-slate-300" />; })()
+                      )}
+                      <div>
+                        <span className="text-[11px] font-semibold uppercase tracking-wide block text-slate-300">Urgency Score</span>
+                        <span className="font-semibold text-white">{maintTriage.urgency}</span>
+                        <p className="text-xs text-slate-400 mt-1">{maintTriage.category}</p>
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500 block mb-0.5">System Action</span>
+                      <span className="text-white font-medium">{maintTriage.action}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500 block mb-0.5">Assigned Contractor</span>
+                      <span className="text-white font-medium">{maintTriage.assignedVendor}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500 block mb-1">Auto-Drafted Notice</span>
+                      <p className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-slate-300 leading-relaxed">{maintTriage.tenantNotice}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-slate-500 text-sm">Select a scenario above (or type your own) to test triage logic.</p>
+                )}
+              </div>
+            </div>
+          </div>
+          </FadeIn>
+        )}
+
+        {/* 8. REPUTATION MANAGER */}
+        {activeTab === 'reputation' && (
+          <FadeIn keyProp={selectedPropertyId + '-reputation'}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl space-y-3">
+              <h3 className="font-semibold text-white text-sm flex items-center gap-2">
+                <Star size={15} className="text-amber-400" /> Google Business Profile Reviews
+              </h3>
+              {current.reviews.map((rev) => (
+                <button
+                  key={rev.id}
+                  onClick={() => handleReviewAI(rev)}
+                  className={`w-full text-left p-4 rounded-xl border transition-colors ${
+                    selectedReview?.id === rev.id ? 'bg-slate-800/80 border-indigo-500/60' : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex justify-between items-center mb-1.5">
+                    <span className="font-medium text-white text-sm">{rev.author}</span>
+                    <StarRating rating={rev.rating} />
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">{rev.comment}</p>
+                </button>
+              ))}
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl flex flex-col justify-between">
+              <div>
+                <h3 className="font-semibold text-white text-sm mb-2">AI Generated Public Reply</h3>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 h-48 text-sm text-slate-300 overflow-y-auto leading-relaxed">
+                  {reviewReply || <span className="text-slate-600">Select a review on the left to generate an optimized response...</span>}
+                </div>
+              </div>
+              {reviewReply && (
+                <button className="mt-4 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white py-2 rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">
+                  <CheckCircle2 size={15} /> Post Response to Google
+                </button>
+              )}
+            </div>
+          </div>
+          </FadeIn>
+        )}
+
+      </main>
+    </div>
+  );
+}
